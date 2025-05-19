@@ -1,0 +1,269 @@
+---
+title: "Project"
+author: "Amir Ragaie - Ebrahim AlaaEldin"
+date: "`r Sys.Date()`"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r, include=FALSE}
+
+if (!requireNamespace("BiocManager", quietly=TRUE))
+    install.packages("BiocManager")
+if (!requireNamespace("SNPRelate", quietly=TRUE))
+    BiocManager::install("SNPRelate")
+if (!requireNamespace("GENESIS", quietly=TRUE))
+    BiocManager::install("GENESIS")
+if (!requireNamespace("SeqVarTools", quietly=TRUE))
+    BiocManager::install("SeqVarTools")
+if (!requireNamespace("gdsfmt", quietly=TRUE))
+    BiocManager::install("gdsfmt")
+if (!requireNamespace("GWASTools", quietly=TRUE))
+    BiocManager::install("GWASTools")
+
+if (!requireNamespace("openxlsx", quietly=TRUE))
+    install.packages("openxlsx")
+
+if (!requireNamespace("qqman", quietly=TRUE))
+    install.packages("qqman")
+
+library(SNPRelate)
+library(GENESIS)
+library(SeqVarTools)
+library(gdsfmt)
+library(GWASTools)
+library(openxlsx)
+library(qqman)
+
+
+
+```
+
+## Table of Contents
+
+1.  [Task 1: Compute Kinship using SNPRelate and GENESIS]
+2.  [Task 2: Compute mQTLs with Mixed Models]
+3.  [Task 3: Inflation factor calculation]
+4.  [Task 4: Manhattan Plot]
+5.  [Task 5: Metabolic Networks]
+6.  [Task 6: Annotate Significant SNPs]
+7.  [Task 7: Regional plots using SNIPA]
+
+\newpage
+## Task 1: Compute Kinship using SNPRelate and GENESIS
+a. Compute kinship using the SNPRelate and GENESIS package in R. You can use the
+IBD family of functions, but note that you need to transform the plink format to GDS
+format using the function snpgdsPED2GDS that takes the ped and map files.
+
+
+```{r}
+# convert to GDS format
+snpgdsPED2GDS(ped.fn = "Qataris 156 Dataset\\Qatari156.ped",
+              map.fn = "Qataris 156 Dataset\\Qatari156.map",
+              out.gdsfn = "Qatari_SNPs.gds")
+
+```
+
+```{r}
+# Open the GDS file
+genofile <- snpgdsOpen("Qatari_SNPs.gds")
+
+# Calculate kinship using MLE method (recommended for accuracy)
+ibd_mle <- snpgdsIBDMLE(genofile, num.thread = 16, kinship = TRUE)
+
+# Extract kinship matrix and pairs dataframe
+kinship_matrix <- ibd_mle$kinship
+ibd_df <- snpgdsIBDSelection(ibd_mle)
+
+# Find all pairs where kinship > 0.1, excluding diagonal
+pairs_idx <- which(kinship_matrix > 0.1, arr.ind = TRUE)
+pairs_idx <- pairs_idx[pairs_idx[, 1] != pairs_idx[, 2], ]
+
+# To avoid double counting pairs (i,j) and (j,i), divide count by 2
+num_pairs <- nrow(pairs_idx) / 2
+
+cat("Number of pairs with kinship > 0.1:", num_pairs, "\n")
+
+# Get unique individuals involved in these pairs
+unique_individuals <- unique(c(pairs_idx[,1], pairs_idx[,2]))
+cat("Number of unique individuals with kinship > 0.1:", length(unique_individuals), "\n")
+
+# Close the GDS file after kinship calculation
+snpgdsClose(genofile)
+
+```
+
+
+
+# GDS (Genomic Data Structure)
+
+**GDS** stands for **Genomic Data Structure**. It is a file format used to efficiently store and access large-scale genetic data, such as SNP genotype data.
+
+
+
+| Method                                                                                                   | Best for                                          |
+|----------------------------------------------------------------------------------------------------------|---------------------------------------------------|
+| [snpgdsIBDKING](https://www.rdocumentation.org/packages/SNPRelate/versions/1.6.4/topics/snpgdsIBDKING)   | Quick, robust kinship estimates on large datasets |
+| [snpgdsIBDMLE](https://www.rdocumentation.org/packages/SNPRelate/versions/1.6.4/topics/snpgdsIBDMLE)     | More accurate, maximum likelihood kinship         |
+
+**Input:** You give it an IBD result object from `snpgdsIBDMLE`, which contains IBD/kinship estimates between individuals.
+
+**Output:** It returns a data frame (`ibd_df`) listing pairs of individuals with their IBD estimates and related information.
+b. Report the number of individuals who have a kinship > 0.1
+
+\newpage
+## Task 2: Compute mQTLs with Mixed Models
+a. Compute mQTLs using all SNPs and all metabolites to identify associations and report
+their p-values. You will need to use mixed models to include kinship.
+```{r}
+# Load PCA results (adjust paths accordingly)
+eigenvectors <- read.table("Qataris 156 Dataset\\pca_results.eigenvec", header = FALSE)
+eigenvalues <- read.table("Qataris 156 Dataset\\pca_results.eigenval", header = FALSE)
+
+colnames(eigenvectors) <- c("FID", "IID", paste0("PC", 1:(ncol(eigenvectors)-2)))
+pcs <- eigenvectors[, 2:5]
+
+# Load metabolites phenotype data (adjust path)
+metabolites_matrix <- read.csv("qatari_metabolites_2025.csv", stringsAsFactors = FALSE)
+
+```
+
+## Prepare data
+```{r}
+# Merge phenotype with PCs by sample IID (assumed matching sample IDs)
+seqData <- merge(metabolites_matrix, pcs, by.x = "Sample", by.y = "IID")
+seqData$scanID <- seqData$Sample
+
+# Create ScanAnnotationDataFrame object
+scanAnnot <- ScanAnnotationDataFrame(seqData)
+
+# Subset kinship matrix for samples - make sure kinship_matrix is loaded from Task 1
+kin <- kinship_matrix[seqData$scanID, seqData$scanID]
+
+
+```
+
+
+b. GENESIS provides a fitNullModel function that computes residuals of metabolites from
+the covariates, including kinship, and an assocTestSingle function that computes the
+mQTLs.
+
+## Fit null model for each metabolite
+```{r}
+results_list <- list()
+heritability_list <- data.frame(Metabolite = character(), Heritability = numeric(), stringsAsFactors = FALSE)
+
+for (metab in colnames(metabolites_matrix)[-1]) {  # Assuming first column is Sample ID
+  phenotype <- metabolites_matrix[[metab]]
+  
+  # Fit null model with kinship and PCs as covariates
+  nullmod <- fitNullModel(
+    x = scanAnnot,
+    outcome = phenotype,
+    covars = c("PC1", "PC2", "PC3"),
+    cov.mat = kin,
+    family = "gaussian"
+  )
+  
+  # Run association tests (SNP by SNP)
+  assoc <- assocTestSingle(nullmod, scanAnnot) # or seqData, depending on format
+  
+  # Filter significant associations with p < 1e-4
+  sig_assoc <- assoc[assoc$Score.pval < 1e-4, ]
+  if (nrow(sig_assoc) > 0) {
+    sig_assoc$Metabolite <- metab
+    results_list[[metab]] <- sig_assoc
+  }
+  
+  # Estimate heritability and save
+  hci <- varCompCI(nullmod)
+  heritability_list <- rbind(heritability_list, 
+                             data.frame(Metabolite = metab, Heritability = hci[1, "Proportion"]))
+}
+
+
+```
+
+c. Include the first three principal components in the covariates.
+d. Report significant SNP-Metabolite associations until p < 0.0001 (that’s three zeros after
+the decimal point) in an Excel sheet, showing beta values, standard error, effect allele,
+degree of freedom, and p values. (all values are the direct output of assocTestSingle).
+e. Report heritability from the varCompCI function in GENESIS.
+```{r}
+library(openxlsx)
+
+# Combine all significant associations into one dataframe
+final_sig_assoc <- do.call(rbind, results_list)
+
+# Select and rename columns to match requirements
+report_df <- final_sig_assoc[, c("Metabolite", "variant.id", "beta", "se", "effect.allele", "df", "Score.pval")]
+colnames(report_df) <- c("Metabolite", "SNP", "Beta", "SE", "Effect_Allele", "DF", "P_value")
+
+write.xlsx(list(
+  Significant_mQTLs = report_df,
+  Heritability = heritability_list
+), file = "mQTL_Results.xlsx", rowNames = FALSE)
+
+```
+
+
+
+\newpage
+## Task 3: Inflation factor calculation
+
+```{r}
+inflation_factors <- data.frame(Metabolite = character(), Lambda = numeric(), stringsAsFactors = FALSE)
+
+for (metab in names(results_list)) {
+  assoc <- results_list[[metab]]
+  
+  chisq <- qchisq(1 - assoc$Score.pval, df = 1)
+  lambda <- median(chisq, na.rm = TRUE) / qchisq(0.5, df = 1)
+  
+  inflation_factors <- rbind(inflation_factors, data.frame(Metabolite = metab, Lambda = lambda))
+}
+
+# Print average inflation factor
+cat("Average inflation factor (lambda):", mean(inflation_factors$Lambda, na.rm = TRUE), "\n")
+
+```
+
+\newpage
+## Task 4: Manhattan Plot
+```{r}
+# Combine all association results (significant or not)
+all_assoc <- do.call(rbind, results_list)
+
+manhattan_data <- data.frame(
+  SNP = all_assoc$variant.id,
+  CHR = as.numeric(as.character(all_assoc$chr)),
+  BP = all_assoc$pos,
+  P = all_assoc$Score.pval,
+  stringsAsFactors = FALSE
+)
+
+# Clean and filter data
+manhattan_data <- na.omit(manhattan_data)
+manhattan_data <- manhattan_data[!is.na(manhattan_data$CHR), ]
+
+# Plot Manhattan plot with significance line at p = 1e-4
+manhattan(
+  manhattan_data,
+  genomewideline = -log10(1e-4),
+  suggestiveline = FALSE,
+  col = c("blue", "orange"),
+  main = "Manhattan Plot of mQTL Associations"
+)
+
+```
+
+\newpage
+## Task 5: Metabolic Networks
+\newpage
+## Task 6: Annotate Significant SNPs
+\newpage
+## Task 7: Regional plots using SNIPA
+\newpage
