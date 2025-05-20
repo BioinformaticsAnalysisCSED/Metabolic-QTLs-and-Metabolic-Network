@@ -1,0 +1,29 @@
+PLINK v1.9.0-b.7.7 64-bit (22 Oct 2024)
+Options in effect:
+  --file top20_variants
+  --out top_20_Qatari
+  --recode vcf
+
+Hostname: EBRAHIM-ALAA26
+Working directory: E:\CSE\CSE 3-2\Bio\Labs\Project\Plink
+Start time: Tue May 20 06:16:36 2025
+
+Random number seed: 1747710996
+16236 MB RAM detected; reserving 8118 MB for main workspace.
+Allocated 3424 MB successfully, after larger attempt(s) failed.
+Scanning .ped file... done.
+Performing single-pass .bed write (20 variants, 156 people).
+--file: top_20_Qatari-temporary.bed + top_20_Qatari-temporary.bim +
+top_20_Qatari-temporary.fam written.
+20 variants loaded from .bim file.
+156 people (49 males, 107 females) loaded from .fam.
+Using 1 thread (no multithreaded calculations invoked).
+Before main variant filters, 156 founders and 0 nonfounders present.
+Calculating allele frequencies... done.
+Total genotyping rate is 0.999038.
+20 variants and 156 people pass filters and QC.
+Note: No phenotypes present.
+Warning: Underscore(s) present in sample IDs.
+--recode vcf to top_20_Qatari.vcf ... done.
+
+End time: Tue May 20 06:16:36 2025
